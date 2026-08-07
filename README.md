@@ -89,10 +89,3 @@ Initially this looked like a second broken feature — a subscribed, authenticat
 ### 3. npm package occasionally fails to fully extract on Windows
 
 Global install (`npm install -g solarch`) intermittently left an incomplete `node_modules/solarch` folder (only its own `node_modules` subfolder, missing `package.json`/`dist`) after an earlier failed install left EPERM-locked files behind. A local install (`npm install solarch` inside a project with its own `package.json`) resolved this reliably. Also required Node 20 LTS rather than Node 24, since `better-sqlite3` (a native dependency) has no Node 24 Windows prebuild yet and compiling from source requires Visual Studio Build Tools.
-
-## What I'd do next with more time
-
-- Patch and PR the `pb_hooks` bug upstream, and suggest a doc fix for the realtime channel-naming example
-- Wire up actual embedding generation (OpenAI or local Ollama) for the vector search feature to be fully live rather than schema-ready
-- Add integration tests
-- Containerize with the Dockerfile pattern from the package docs
