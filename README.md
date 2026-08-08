@@ -1,21 +1,47 @@
-# NexusDocs — Team Knowledge Base Backend (built on Solarch)
+# NexusDocs — Team Knowledge Base (built on Solarch)
 
-A backend for a team knowledge-sharing app: workspaces contain documents, documents have comments and an author, and every meaningful action is logged to an activity feed. Built using the `solarch` npm package (a PocketBase-style backend-as-a-service for Node.js) as the required framework.
+A full-stack team knowledge-base app: workspaces contain documents, documents have comments,
+authors, and file attachments, and every action is tracked in an activity log. Built to satisfy
+a backend skills assessment requiring use of the `solarch` npm package.
+
+**Live app:** https://nexusdocs-frontend.vercel.app
+**Live API:** https://nexusdocs.onrender.com/api/
+**Frontend repo:** nexusdocs-frontend
+
+> **Note on live-demo reliability:** the backend runs on Render's free tier, which has no
+> persistent disk — every redeploy wipes the database (see "Known Issues" below). If the live
+> app appears empty or login fails when you check it, the schema/data may need to be rebuilt.
+> Run `node rebuild-schema.js https://nexusdocs.onrender.com <admin-email> <admin-password>`
+> (password is printed in Render's deploy logs) and sign up a fresh test user.
 
 ## Stack
 
-- **Solarch** (v0.15.6) — auto-generated REST API, SQLite storage, built-in auth, collection/schema management
-- **Node.js 20 LTS**
-- Access controlled entirely through Solarch's declarative API Rules (no custom route code needed for CRUD)
+- **Backend**: Solarch (v0.15.6) — auto-generated REST API, SQLite storage, built-in auth,
+  declarative schema/rules — hosted on Render
+- **Frontend**: plain HTML/CSS/JS, no framework, no build step — hosted on Vercel
+- **Node.js 20 LTS** (required — see Known Issues)
 
-## Features implemented
+## Features
 
-1. **Auth** — email/password signup and login via Solarch's built-in `auth`-type collection, JWT-based sessions
-2. **Relational CRUD** — `workspaces → documents → comments`, each properly linked via relation fields
-3. **Role-based permissions** — API Rules enforce that only a workspace's owner can update/delete it, and only a document/comment's author can edit or delete their own content, while any authenticated user can read and create
-4. **File attachments** — `documents` collection includes a file field for uploads
-5. **Semantic search readiness** — `documents` includes a 1536-dim vector field (`embedding`) wired to Solarch's cosine-similarity vector search endpoint
-6. **Activity logging** — every workspace/document/comment creation is recorded in an `activity_log` collection, implemented at the application layer (see "Known Issues" below for why)
+1. **Auth** — signup/login via Solarch's built-in `auth` collection, JWT sessions
+2. **Relational CRUD** — `workspaces → documents → comments`, linked via relation fields
+3. **Role-based permissions** — API Rules enforce workspace-owner-only delete, author-only
+   edit/delete on documents and comments, while any authenticated user can read/create
+4. **File attachments** — upload a file when creating a document, download it from the detail view
+5. **Document editing** — in-place edit mode for title/content
+6. **Document deletion** — with confirmation prompt
+7. **Semantic search readiness** — `documents` has a 1536-dim vector field wired to Solarch's
+   cosine-similarity search endpoint (schema-ready; no embeddings generated yet — see "What I'd
+   do next")
+8. **Activity logging** — every create action is recorded to `activity_log`, implemented at the
+   application layer (see Known Issues — Solarch's own hook system doesn't fire on record create)
+9. **Realtime** — WebSocket live updates verified working (see Known Issues for the correct
+   channel-naming convention, which differs from the package's README example)
+10. **Author display** — documents/comments show the author's name (via `expand=author`)
+    instead of a raw user ID
+11. **Friendly error messages** — backend validation errors (e.g. "Value must be unique") are
+    translated into plain language in the UI, with actionable next steps (e.g. a "Sign in
+    instead" link when signup hits a duplicate email)
 
 ## Schema
 
@@ -27,14 +53,14 @@ A backend for a team knowledge-sharing app: workspaces contain documents, docume
 | `comments` | base | `text`, `document` (→documents), `author` (→users) |
 | `activity_log` | base | `action`, `details`, `user` (→users), `workspace` (→workspaces) |
 
-## API Rules set on each collection
+## API Rules
 
 - `workspaces`: list/view/create require auth; update/delete require `@request.auth.id = owner`
 - `documents`: list/view/create/update require auth; delete requires `@request.auth.id = author`
 - `comments`: list/view/create require auth; update/delete require `@request.auth.id = author`
 - `activity_log`: list/view/create require auth
 
-## Setup
+## Local setup
 
 ```bash
 git clone <this-repo>
@@ -42,7 +68,8 @@ cd nexusdocs
 npm install
 ```
 
-Solarch requires a JWT secret (min 32 chars) set as an environment variable before it will start:
+Requires **Node 20 LTS** (see Known Issues — Node 24 fails to build a native dependency on
+Windows). Set a JWT secret (32+ chars) before starting:
 
 ```powershell
 # PowerShell
@@ -56,36 +83,114 @@ export SOLARCH_JWT_SECRET="<your-generated-secret>"
 npx solarch serve --dev --port 8090
 ```
 
-On first run, no superuser exists yet. The Admin UI's install screen is broken in this package version (see Known Issues), so create the superuser via CLI instead:
+The Admin UI's install screen is broken in this package version (see Known Issues), so create
+the first superuser via CLI instead:
 
 ```bash
 npx solarch superuser-create admin@example.com YourPassword123
 ```
 
-Then restart the server. The REST API is live at `http://localhost:8090/api/`.
+Then create the schema — either by hand (commands in `setup-commands.md`) or in one shot:
 
-## Recreating the schema
+```bash
+node rebuild-schema.js http://localhost:8090 admin@example.com YourPassword123
+```
 
-The collections in this project were created via `curl`/`Invoke-RestMethod` calls against `POST /api/collections` using the admin token (see `setup-commands.md` for the exact commands run, in order). Solarch's migration system (`pb_migrations/`) is documented but wasn't used here since collection creation via the Admin API was more directly verifiable step-by-step during development.
+## Deployment
 
-## Known Issues (found while building this)
+**Backend (Render)**
+- Start command: `solarch serve --port $PORT`
+- Env vars: `SOLARCH_JWT_SECRET`, `CORS_ALLOWED_ORIGINS` (comma-separated list of allowed
+  frontend origins)
+- Superuser creation on a host with no shell access: temporarily set the start command to
+  `node setup-admin.js && solarch serve --port $PORT`, redeploy, copy the generated password
+  from the deploy logs, then revert the start command.
+- **`rebuild-schema.js`** — run locally, points at any live Solarch URL, and recreates the
+  entire schema (5 collections + all API rules) in one command. Built specifically to make
+  recovering from Render's free-tier data wipes fast (see Known Issues).
 
-One real bug and one documentation/implementation mismatch were found in `solarch@0.15.6` by reading the compiled source in `node_modules/solarch/dist/` rather than assuming from behavior alone:
+**Frontend (Vercel)**
+- Static site, no build step. Deploy the `nexusdocs-frontend` repo directly.
+- Edit `config.js` to point at the live backend URL before deploying.
+- Add the resulting Vercel URL to the backend's `CORS_ALLOWED_ORIGINS` env var.
 
-### 1. `pb_hooks` record-create hooks never fire
+## Known Issues
 
-`dist/tools/jsvm/jsvm.js` registers `onRecordCreate(tag, handler)` in the hook sandbox, but the callback is bound with `app.onRecordCreate.bindFunc(handler)` — the `tag` argument is silently discarded (no per-collection filtering), **and** nothing in `dist/apis/record_crud.js`'s create handler ever calls `.trigger()` on that hook object. So no JS hook file can ever run on record creation, regardless of how it's written.
+Investigated and documented rather than worked around blindly — several required reading
+Solarch's compiled source in `node_modules/solarch/dist/` to confirm root cause.
 
-**Verified by**: writing a minimal hook that only logs on load and on fire; the "load" log printed every server start, the "fire" log never printed after creating records via the API.
+### 1. `pb_hooks` record-create hooks never fire (confirmed bug)
 
-**Workaround used**: activity logging is done at the application/client layer — after each `documents`/`comments`/`workspaces` create call, a second call writes a matching row to `activity_log` directly.
+`dist/tools/jsvm/jsvm.js` registers `onRecordCreate(tag, handler)` in the hook sandbox, but
+the `tag` argument (meant to filter by collection) is silently discarded, and — more
+importantly — nothing in `dist/apis/record_crud.js`'s create handler ever calls `.trigger()`
+on the hook. Verified with a minimal hook that logs on file load (fires every server start) and
+on record create (never fires, confirmed across many test records).
 
-### 2. WebSocket realtime works, but channel names use collection ID, not name (undocumented)
+**Workaround**: activity logging happens at the application layer — the frontend makes a
+second API call to `activity_log` immediately after creating a document or comment.
 
-Initially this looked like a second broken feature — a subscribed, authenticated WebSocket client never received events after creating records. Reading `dist/apis/record_crud.js` showed `broadcastRecordEvent('create', collection.id, ...)` **is** correctly called on every create/update/delete. The actual cause: `broadcastRecordEvent` builds the channel string as `collections.${collectionId}.records` using the collection's **ID** (e.g. `msho2p183d460397`), while the README's example subscribes using the collection **name** (`collections.posts.records`). Subscribing to the ID-based channel instead works correctly and was verified live — connect, authenticate via `?token=`, subscribe to `collections.<collectionId>.records`, then a REST create immediately pushes a matching `{"type":"event",...}` message to the client.
+**Fix**: one line — add the missing `.trigger()` call in `record_crud.js`'s POST handler. Not
+pursued given project scope, but straightforward to contribute upstream.
 
-**Takeaway**: realtime is fully functional; the README's realtime example is misleading/outdated since it uses collection names where the implementation expects collection IDs.
+### 2. Realtime works, but the README's channel-naming example is wrong
 
-### 3. npm package occasionally fails to fully extract on Windows
+Initially looked like a second broken feature — an authenticated, subscribed WebSocket client
+never received events. Reading `dist/apis/record_crud.js` showed `broadcastRecordEvent()` **is**
+called correctly on every create/update/delete. The actual issue: the channel is built as
+`collections.${collectionId}.records` using the collection's **ID**, while the package's README
+example subscribes using the collection **name** (e.g. `collections.posts.records`). Subscribing
+with the correct ID-based channel works and was verified live end-to-end.
 
-Global install (`npm install -g solarch`) intermittently left an incomplete `node_modules/solarch` folder (only its own `node_modules` subfolder, missing `package.json`/`dist`) after an earlier failed install left EPERM-locked files behind. A local install (`npm install solarch` inside a project with its own `package.json`) resolved this reliably. Also required Node 20 LTS rather than Node 24, since `better-sqlite3` (a native dependency) has no Node 24 Windows prebuild yet and compiling from source requires Visual Studio Build Tools.
+### 3. Solarch is hardcoded to SQLite — no driver/adapter for MongoDB or Postgres
+
+Investigated per a suggestion to consider MongoDB or a hosted Postgres (e.g. Neon) for more
+durable storage. Reading `dist/core/db.js` and `dist/tools/database/sqlite-driver.js` confirmed
+there's no database abstraction layer — every query throughout `dist/core/` and `dist/apis/` is
+written directly in SQLite syntax. Swapping databases isn't a config change; it would require
+rewriting the package's data layer entirely. Documented as a hard constraint of the tool as
+published, not something addressable within this project's scope.
+
+### 4. Render's free tier has no persistent storage
+
+Every redeploy (a code push, an env var change, a settings change) gives the container a fresh
+filesystem, wiping `pb_data/` (and with it, the superuser and all collections). This is a
+platform limitation, not a code bug. Confirmed by observing the schema disappear after several
+otherwise-unrelated deploys (a CORS update, a start-command revert).
+
+**Workaround**: `rebuild-schema.js` (in this repo) rebuilds the full schema against any live
+Solarch URL in one command, so recovery after a wipe takes seconds rather than manual re-setup.
+User-generated data (test accounts, documents, comments) is *not* recoverable this way — only
+the schema/structure. **Proper fix** would be a Render persistent disk (paid tier) or a host
+with a free persistent volume (e.g. Fly.io) — not adopted here to avoid another platform
+migration this late in the project, but noted as the correct production fix.
+
+### 5. Windows-specific setup friction (resolved, documented for reference)
+
+- **Node 24 fails to compile** `better-sqlite3` (a native dependency) on Windows — no prebuilt
+  binary exists for that Node/platform combo, and compiling from source requires Visual Studio
+  Build Tools. Fixed by using Node 20 LTS instead (has a prebuilt binary).
+- **Global npm installs of `solarch` repeatedly landed incomplete** (missing `dist/`,
+  `package.json`) due to leftover EPERM-locked files from an earlier failed install attempt.
+  Fixed by installing locally inside a project folder (with its own `package.json`) instead of
+  globally.
+- **PowerShell's `curl` is aliased to `Invoke-WebRequest`**, which mangles JSON request bodies.
+  Used `Invoke-RestMethod` throughout instead.
+
+### 6. Multipart form field names must match the collection schema exactly
+
+The frontend's file-upload code initially sent the file under the field name `file`, but the
+collection's actual field is named `attachment`. This mismatch caused Solarch's multipart parser
+to fail validation on unrelated fields too (`title` reported as missing even when present) rather
+than raising a clear "unexpected field" error — a minor error-reporting gap worth knowing about
+when debugging similar multipart issues with this package.
+
+## What I'd do next with more time
+
+- Contribute the `pb_hooks` fix upstream
+- Move backend hosting to a platform with a free persistent volume (Fly.io) to eliminate the
+  data-wipe-on-redeploy issue entirely
+- Generate real embeddings (OpenAI or local Ollama) to make vector search functionally live
+- Add a realtime UI (currently the backend supports live WebSocket events; the frontend re-fetches instead of subscribing)
+- Document version history (audit trail of edits, not just current state)
+- Automated tests for the API rules (confirm non-owners genuinely can't update/delete)
