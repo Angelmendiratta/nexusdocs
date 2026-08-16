@@ -184,13 +184,3 @@ collection's actual field is named `attachment`. This mismatch caused Solarch's 
 to fail validation on unrelated fields too (`title` reported as missing even when present) rather
 than raising a clear "unexpected field" error — a minor error-reporting gap worth knowing about
 when debugging similar multipart issues with this package.
-
-## What I'd do next with more time
-
-- Contribute the `pb_hooks` fix upstream
-- Move backend hosting to a platform with a free persistent volume (Fly.io) to eliminate the
-  data-wipe-on-redeploy issue entirely
-- Generate real embeddings (OpenAI or local Ollama) to make vector search functionally live
-- Add a realtime UI (currently the backend supports live WebSocket events; the frontend re-fetches instead of subscribing)
-- Document version history (audit trail of edits, not just current state)
-- Automated tests for the API rules (confirm non-owners genuinely can't update/delete)
