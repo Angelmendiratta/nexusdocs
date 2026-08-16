@@ -1,26 +1,29 @@
 // auto-setup-and-serve.js
 //
-// PERMANENT FIX for Render free tier wiping the database on every deploy
-// (confirmed: this happens on ANY save — code pushes, env var changes, even
-// settings changes with no code difference — not just idle-wakeup restarts).
+// Starts Solarch, creates the schema if it is missing, and repairs the
+// important collection API rules on every boot.
 //
-// This script starts Solarch, waits for it to be reachable, then automatically
-// creates a superuser (random password, printed to logs) and the full schema
-// (5 collections + API rules) EVERY time the server boots — but skips
-// recreation if the schema already exists, so it's safe to run on every boot
-// without duplicating anything.
-//
-// Set this as the Render Start Command, permanently:
+// Render Start Command:
 //   node auto-setup-and-serve.js
 //
-// No more manual rebuild-schema.js runs needed after every wipe.
+// Recommended Render environment variables:
+//
+//   ADMIN_EMAIL=admin@example.com
+//   ADMIN_PASSWORD=<stable admin password>
+//
+// If ADMIN_PASSWORD is not set and a superuser does not already exist,
+// a random password is generated for this boot and printed to the logs.
+// For a persistent deployment, set ADMIN_PASSWORD in Render.
 
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 8090;
 const BASE = `http://localhost:${PORT}`;
-const ADMIN_EMAIL = 'admin@example.com';
+
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com';
+const ADMIN_PASSWORD =
+  process.env.ADMIN_PASSWORD || crypto.randomBytes(12).toString('hex');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -30,199 +33,620 @@ async function waitForServer(maxAttempts = 30) {
   for (let i = 0; i < maxAttempts; i++) {
     try {
       const res = await fetch(`${BASE}/api/health`);
-      if (res.ok) return true;
+
+      if (res.ok) {
+        return true;
+      }
     } catch {
-      // not up yet
+      // Server is still starting.
     }
+
     await sleep(1000);
   }
+
   return false;
 }
 
-async function req(path, method, body, token) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+async function req(path, method = 'GET', body = null, token = null) {
+  const headers = {};
+
+  if (body !== null) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body !== null ? JSON.stringify(body) : undefined,
   });
+
   const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    data,
+  };
+}
+
+async function createSuperuserIfNeeded() {
+  try {
+    execSync(
+      `npx solarch superuser-create ${ADMIN_EMAIL} ${ADMIN_PASSWORD}`,
+      {
+        stdio: 'inherit',
+      }
+    );
+
+    console.log('========================================');
+    console.log('[auto-setup] Superuser created:');
+    console.log('[auto-setup] Email:', ADMIN_EMAIL);
+    console.log('[auto-setup] Password:', ADMIN_PASSWORD);
+    console.log('========================================');
+  } catch {
+    console.log(
+      '[auto-setup] Superuser already exists or could not be created.'
+    );
+    console.log(
+      '[auto-setup] Will try the configured ADMIN_PASSWORD.'
+    );
+  }
+}
+
+async function adminLogin() {
+  const login = await req(
+    '/api/admins/auth-with-password',
+    'POST',
+    {
+      identity: ADMIN_EMAIL,
+      password: ADMIN_PASSWORD,
+    }
+  );
+
+  if (!login.ok || !login.data.token) {
+    console.log(
+      '[auto-setup] Admin login failed.'
+    );
+
+    console.log(
+      '[auto-setup] Make sure ADMIN_EMAIL and ADMIN_PASSWORD are correct in Render.'
+    );
+
+    return null;
+  }
+
+  return login.data.token;
+}
+
+async function createSchema(token) {
+  console.log('[auto-setup] Schema missing — creating collections...');
+
+  // ------------------------------------------------------------
+  // USERS
+  // ------------------------------------------------------------
+
+  const users = await req(
+    '/api/collections',
+    'POST',
+    {
+      name: 'users',
+      type: 'auth',
+      fields: [
+        {
+          name: 'name',
+          type: 'text',
+        },
+      ],
+    },
+    token
+  );
+
+  if (!users.ok) {
+    throw new Error(
+      `Failed creating users: ${JSON.stringify(users.data)}`
+    );
+  }
+
+  // ------------------------------------------------------------
+  // WORKSPACES
+  // ------------------------------------------------------------
+
+  const workspaces = await req(
+    '/api/collections',
+    'POST',
+    {
+      name: 'workspaces',
+      type: 'base',
+      fields: [
+        {
+          name: 'wname',
+          type: 'text',
+          required: true,
+        },
+        {
+          name: 'owner',
+          type: 'relation',
+          collectionId: users.data.id,
+        },
+        {
+          name: 'members',
+          type: 'relation',
+          collectionId: users.data.id,
+          maxSelect: 999,
+        },
+      ],
+    },
+    token
+  );
+
+  if (!workspaces.ok) {
+    throw new Error(
+      `Failed creating workspaces: ${JSON.stringify(workspaces.data)}`
+    );
+  }
+
+  // ------------------------------------------------------------
+  // WORKSPACE MEMBERS
+  // ------------------------------------------------------------
+
+  const workspaceMembers = await req(
+    '/api/collections',
+    'POST',
+    {
+      name: 'workspace_members',
+      type: 'base',
+      fields: [
+        {
+          name: 'workspace',
+          type: 'relation',
+          collectionId: workspaces.data.id,
+          required: true,
+        },
+        {
+          name: 'user',
+          type: 'relation',
+          collectionId: users.data.id,
+          required: true,
+        },
+        {
+          name: 'role',
+          type: 'select',
+          values: ['owner', 'editor', 'viewer'],
+          required: true,
+        },
+      ],
+    },
+    token
+  );
+
+  if (!workspaceMembers.ok) {
+    throw new Error(
+      `Failed creating workspace_members: ${JSON.stringify(
+        workspaceMembers.data
+      )}`
+    );
+  }
+
+  // ------------------------------------------------------------
+  // DOCUMENTS
+  // ------------------------------------------------------------
+
+  const documents = await req(
+    '/api/collections',
+    'POST',
+    {
+      name: 'documents',
+      type: 'base',
+      fields: [
+        {
+          name: 'title',
+          type: 'text',
+          required: true,
+        },
+        {
+          name: 'content',
+          type: 'editor',
+        },
+        {
+          name: 'workspace',
+          type: 'relation',
+          collectionId: workspaces.data.id,
+        },
+        {
+          name: 'author',
+          type: 'relation',
+          collectionId: users.data.id,
+        },
+        {
+          name: 'attachment',
+          type: 'file',
+        },
+        {
+          name: 'embedding',
+          type: 'vector',
+          dimensions: 1536,
+        },
+      ],
+    },
+    token
+  );
+
+  if (!documents.ok) {
+    throw new Error(
+      `Failed creating documents: ${JSON.stringify(
+        documents.data
+      )}`
+    );
+  }
+
+  // ------------------------------------------------------------
+  // COMMENTS
+  // ------------------------------------------------------------
+
+  const comments = await req(
+    '/api/collections',
+    'POST',
+    {
+      name: 'comments',
+      type: 'base',
+      fields: [
+        {
+          name: 'text',
+          type: 'text',
+          required: true,
+        },
+        {
+          name: 'document',
+          type: 'relation',
+          collectionId: documents.data.id,
+        },
+        {
+          name: 'author',
+          type: 'relation',
+          collectionId: users.data.id,
+        },
+      ],
+    },
+    token
+  );
+
+  if (!comments.ok) {
+    throw new Error(
+      `Failed creating comments: ${JSON.stringify(
+        comments.data
+      )}`
+    );
+  }
+
+  // ------------------------------------------------------------
+  // ACTIVITY LOG
+  // ------------------------------------------------------------
+
+  const activity = await req(
+    '/api/collections',
+    'POST',
+    {
+      name: 'activity_log',
+      type: 'base',
+      fields: [
+        {
+          name: 'action',
+          type: 'text',
+          required: true,
+        },
+        {
+          name: 'details',
+          type: 'text',
+        },
+        {
+          name: 'user',
+          type: 'relation',
+          collectionId: users.data.id,
+        },
+        {
+          name: 'workspace',
+          type: 'relation',
+          collectionId: workspaces.data.id,
+        },
+      ],
+    },
+    token
+  );
+
+  if (!activity.ok) {
+    throw new Error(
+      `Failed creating activity_log: ${JSON.stringify(
+        activity.data
+      )}`
+    );
+  }
+
+  console.log('[auto-setup] Collections created successfully.');
+}
+
+async function getCollections(token) {
+  const res = await req(
+    '/api/collections',
+    'GET',
+    null,
+    token
+  );
+
+  if (!res.ok) {
+    throw new Error(
+      `Could not list collections: ${JSON.stringify(res.data)}`
+    );
+  }
+
+  const items = res.data.items || res.data || [];
+
+  const byName = Object.fromEntries(
+    items.map(collection => [collection.name, collection])
+  );
+
+  const requiredCollections = [
+    'users',
+    'workspaces',
+    'workspace_members',
+    'documents',
+    'comments',
+    'activity_log',
+  ];
+
+  for (const name of requiredCollections) {
+    if (!byName[name]) {
+      throw new Error(
+        `Collection "${name}" is missing.`
+      );
+    }
+  }
+
+  return byName;
+}
+
+async function repairRules(token, collections) {
+  // IMPORTANT:
+  // Declare this ONLY ONCE in this function.
+  const authRule = '@request.auth.id != ""';
+
+  // ------------------------------------------------------------
+  // USERS
+  // ------------------------------------------------------------
+  //
+  // Signup stays public.
+  // Authenticated users can search/view existing users.
+  // This is required by the Members UI which looks up a user by email.
+
+  const usersResult = await req(
+    `/api/collections/${collections.users.id}`,
+    'PATCH',
+    {
+      listRule: authRule,
+      viewRule: authRule,
+      createRule: '',
+    },
+    token
+  );
+
+  if (!usersResult.ok) {
+    console.log(
+      '[auto-setup] Failed repairing users rules:',
+      JSON.stringify(usersResult.data)
+    );
+  }
+
+  // ------------------------------------------------------------
+  // WORKSPACES
+  // ------------------------------------------------------------
+
+  const workspacesResult = await req(
+    `/api/collections/${collections.workspaces.id}`,
+    'PATCH',
+    {
+      listRule: authRule,
+      viewRule: authRule,
+      createRule: authRule,
+      updateRule: '@request.auth.id = owner',
+      deleteRule: '@request.auth.id = owner',
+    },
+    token
+  );
+
+  if (!workspacesResult.ok) {
+    console.log(
+      '[auto-setup] Failed repairing workspace rules:',
+      JSON.stringify(workspacesResult.data)
+    );
+  }
+
+  // ------------------------------------------------------------
+  // WORKSPACE MEMBERS
+  // ------------------------------------------------------------
+
+  const membersResult = await req(
+    `/api/collections/${collections.workspace_members.id}`,
+    'PATCH',
+    {
+      listRule: authRule,
+      viewRule: authRule,
+      createRule: authRule,
+      updateRule: authRule,
+      deleteRule: '@request.auth.id = user',
+    },
+    token
+  );
+
+  if (!membersResult.ok) {
+    console.log(
+      '[auto-setup] Failed repairing workspace_members rules:',
+      JSON.stringify(membersResult.data)
+    );
+  }
+
+  // ------------------------------------------------------------
+  // DOCUMENTS
+  // ------------------------------------------------------------
+
+  const documentsResult = await req(
+    `/api/collections/${collections.documents.id}`,
+    'PATCH',
+    {
+      listRule: authRule,
+      viewRule: authRule,
+      createRule: authRule,
+      updateRule: authRule,
+      deleteRule: '@request.auth.id = author',
+    },
+    token
+  );
+
+  if (!documentsResult.ok) {
+    console.log(
+      '[auto-setup] Failed repairing document rules:',
+      JSON.stringify(documentsResult.data)
+    );
+  }
+
+  // ------------------------------------------------------------
+  // COMMENTS
+  // ------------------------------------------------------------
+
+  const commentsResult = await req(
+    `/api/collections/${collections.comments.id}`,
+    'PATCH',
+    {
+      listRule: authRule,
+      viewRule: authRule,
+      createRule: authRule,
+      updateRule: authRule,
+      deleteRule: '@request.auth.id = author',
+    },
+    token
+  );
+
+  if (!commentsResult.ok) {
+    console.log(
+      '[auto-setup] Failed repairing comment rules:',
+      JSON.stringify(commentsResult.data)
+    );
+  }
+
+  // ------------------------------------------------------------
+  // ACTIVITY LOG
+  // ------------------------------------------------------------
+
+  const activityResult = await req(
+    `/api/collections/${collections.activity_log.id}`,
+    'PATCH',
+    {
+      listRule: authRule,
+      viewRule: authRule,
+      createRule: authRule,
+    },
+    token
+  );
+
+  if (!activityResult.ok) {
+    console.log(
+      '[auto-setup] Failed repairing activity_log rules:',
+      JSON.stringify(activityResult.data)
+    );
+  }
+
+  console.log('[auto-setup] API rules repaired.');
 }
 
 async function ensureSuperuserAndSchema() {
-  const password = crypto.randomBytes(12).toString('hex');
+  await createSuperuserIfNeeded();
 
-  // Try creating the superuser via CLI. If one already exists this boot
-  // (shouldn't normally happen given the disk wipes, but harmless either way),
-  // it'll just fail and we continue.
-  const { execSync } = require('child_process');
-  try {
-    execSync(`npx solarch superuser-create ${ADMIN_EMAIL} ${password}`, { stdio: 'inherit' });
-    console.log('========================================');
-    console.log('[auto-setup] Superuser created this boot:');
-    console.log('[auto-setup] Email:', ADMIN_EMAIL);
-    console.log('[auto-setup] Password:', password);
-    console.log('========================================');
-  } catch (e) {
-    console.log('[auto-setup] Superuser may already exist, continuing...');
-  }
+  const token = await adminLogin();
 
-  // Log in as admin (with the password we just set, or fall back — if this
-  // fails, schema setup is skipped for this boot and the app still serves
-  // fine for anyone already holding a valid user session).
-  const login = await req('/api/admins/auth-with-password', 'POST', {
-    identity: ADMIN_EMAIL, password,
-  });
-
-  if (!login.ok) {
-    console.log('[auto-setup] Could not log in as fresh admin, skipping schema check.');
-    return;
-  }
-  const token = login.data.token;
-
-  // Check if schema already exists.
-  const check = await req('/api/collections/workspaces/records', 'GET', null, token);
-  if (check.ok) {
-    console.log('[auto-setup] Schema already present, skipping schema creation.');
+  if (!token) {
     return;
   }
 
-  console.log('[auto-setup] Schema missing — creating collections...');
+  let collections;
 
-  const users = await req('/api/collections', 'POST', {
-    name: 'users', type: 'auth',
-    fields: [{ name: 'name', type: 'text' }],
-  }, token);
-  if (!users.ok) { console.log('[auto-setup] Failed creating users:', JSON.stringify(users.data)); return; }
-  await req(`/api/collections/${users.data.id}`, 'PATCH', { createRule: '' }, token);
+  // Check whether the schema already exists.
+  const workspaceCheck = await req(
+    '/api/collections/workspaces/records',
+    'GET',
+    null,
+    token
+  );
 
-  const workspaces = await req('/api/collections', 'POST', {
-    name: 'workspaces', type: 'base',
-    fields: [
-      { name: 'wname', type: 'text', required: true },
-      { name: 'owner', type: 'relation', collectionId: users.data.id },
-      { name: 'members', type: 'relation', collectionId: users.data.id, maxSelect: 999 },
-    ],
-  }, token);
+  if (!workspaceCheck.ok) {
+    await createSchema(token);
+  } else {
+    console.log(
+      '[auto-setup] Schema already present.'
+    );
+  }
 
-  // RBAC: workspace_members links a user to a workspace with a specific role.
-  // Kept as direct field matches (no relation traversal in rules) since
-  // relation-traversal filters (e.g. "workspace.owner = @request.auth.id")
-  // were found to be accepted but unreliable at runtime in this package.
-  const workspaceMembers = await req('/api/collections', 'POST', {
-    name: 'workspace_members', type: 'base',
-    fields: [
-      { name: 'workspace', type: 'relation', collectionId: workspaces.data.id, required: true },
-      { name: 'user', type: 'relation', collectionId: users.data.id, required: true },
-      { name: 'role', type: 'select', values: ['owner', 'editor', 'viewer'], required: true },
-    ],
-  }, token);
+  // IMPORTANT:
+  // This happens whether the schema was newly created OR already existed.
+  // Therefore the updated users/RBAC rules are always repaired.
+  collections = await getCollections(token);
 
-  const documents = await req('/api/collections', 'POST', {
-    name: 'documents', type: 'base',
-    fields: [
-      { name: 'title', type: 'text', required: true },
-      { name: 'content', type: 'editor' },
-      { name: 'workspace', type: 'relation', collectionId: workspaces.data.id },
-      { name: 'author', type: 'relation', collectionId: users.data.id },
-      { name: 'attachment', type: 'file' },
-      { name: 'embedding', type: 'vector', dimensions: 1536 },
-    ],
-  }, token);
+  await repairRules(token, collections);
 
-  const comments = await req('/api/collections', 'POST', {
-    name: 'comments', type: 'base',
-    fields: [
-      { name: 'text', type: 'text', required: true },
-      { name: 'document', type: 'relation', collectionId: documents.data.id },
-      { name: 'author', type: 'relation', collectionId: users.data.id },
-    ],
-  }, token);
-
-  const activity = await req('/api/collections', 'POST', {
-    name: 'activity_log', type: 'base',
-    fields: [
-      { name: 'action', type: 'text', required: true },
-      { name: 'details', type: 'text' },
-      { name: 'user', type: 'relation', collectionId: users.data.id },
-      { name: 'workspace', type: 'relation', collectionId: workspaces.data.id },
-    ],
-  }, token);
-
-  const authRule = '@request.auth.id != ""';
-
-  await req(`/api/collections/${workspaces.data.id}`, 'PATCH', {
-    listRule: authRule, viewRule: authRule, createRule: authRule,
-    updateRule: '@request.auth.id = owner', deleteRule: '@request.auth.id = owner',
-  }, token);
-
-  await req(`/api/collections/${documents.data.id}`, 'PATCH', {
-    listRule: '@request.auth.id = author', viewRule: '@request.auth.id = author',
-    createRule: authRule, updateRule: authRule, deleteRule: '@request.auth.id = author',
-  }, token);
-
-  await req(`/api/collections/${comments.data.id}`, 'PATCH', {
-    listRule: '@request.auth.id = author', viewRule: '@request.auth.id = author',
-    createRule: authRule, updateRule: '@request.auth.id = author', deleteRule: '@request.auth.id = author',
-  }, token);
-
-  await req(`/api/collections/${activity.data.id}`, 'PATCH', {
-    listRule: authRule, viewRule: authRule, createRule: authRule,
-  }, token);
-
-  // workspace_members rules:
-  // - Any authenticated user can list/view membership rows (needed so a
-  //   member can see who else is in a workspace, and so the frontend can
-  //   check "is the current user an editor/viewer/owner" via a filtered query).
-  // - createRule is intentionally permissive (any authenticated user) rather
-  //   than restricted to "only the workspace owner", because a reliable rule
-  //   for checking ownership of a *different* collection's record from here
-  //   isn't available given the relation-traversal reliability issues found
-  //   in this package. The frontend only exposes "add member" UI to owners,
-  //   so this is an app-layer restriction, not a DB-enforced one — documented
-  //   as a known trade-off, same pattern as prior visibility-rule decisions.
-  // - deleteRule allows a member to remove their OWN membership row (leave a
-  //   workspace) — this direct field match IS reliable, unlike relation
-  //   traversal, and was verified with the same pattern used successfully
-  //   for documents/comments (@request.auth.id = author works; cross-
-  //   collection checks don't).
-  await req(`/api/collections/${workspaceMembers.data.id}`, 'PATCH', {
-    listRule: authRule, viewRule: authRule, createRule: authRule,
-    updateRule: authRule, deleteRule: '@request.auth.id = user',
-  }, token);
-
-  console.log('[auto-setup] Schema created successfully:');
-  console.log('[auto-setup]   users:', users.data.id);
-  console.log('[auto-setup]   workspaces:', workspaces.data.id);
-  console.log('[auto-setup]   workspace_members:', workspaceMembers.data.id);
-  console.log('[auto-setup]   documents:', documents.data.id);
-  console.log('[auto-setup]   comments:', comments.data.id);
-  console.log('[auto-setup]   activity_log:', activity.data.id);
+  console.log(
+    '[auto-setup] Startup schema/rule checks complete.'
+  );
 }
 
 async function main() {
-  console.log('[auto-setup] Starting Solarch server...');
-  const server = spawn('npx', ['solarch', 'serve', '--port', PORT], {
-    stdio: 'inherit',
-    shell: true,
-  });
+  console.log(
+    '[auto-setup] Starting Solarch server...'
+  );
 
-  server.on('exit', (code) => {
-    console.log(`[auto-setup] Server process exited with code ${code}`);
+  const server = spawn(
+    'npx',
+    ['solarch', 'serve', '--port', PORT],
+    {
+      stdio: 'inherit',
+      shell: true,
+    }
+  );
+
+  server.on('exit', code => {
+    console.log(
+      `[auto-setup] Server process exited with code ${code}`
+    );
+
     process.exit(code);
   });
 
-  console.log('[auto-setup] Waiting for server to be ready...');
+  console.log(
+    '[auto-setup] Waiting for server to be ready...'
+  );
+
   const ready = await waitForServer();
+
   if (!ready) {
-    console.log('[auto-setup] Server did not become ready in time, skipping auto-setup.');
-    return;
+    console.error(
+      '[auto-setup] Server did not become ready in time.'
+    );
+
+    process.exit(1);
   }
 
-  await ensureSuperuserAndSchema();
-  console.log('[auto-setup] Startup checks complete. Server is running.');
+  try {
+    await ensureSuperuserAndSchema();
+  } catch (err) {
+    console.error(
+      '[auto-setup] Startup setup failed:',
+      err.message
+    );
+  }
+
+  console.log(
+    '[auto-setup] Server is running.'
+  );
 }
 
 main();
