@@ -1,14 +1,9 @@
 // rebuild-schema.js
-// Run this LOCALLY on your machine (not on Render) right after every Render redeploy,
-// since the free tier wipes the database on every deploy.
+// Manual recovery tool (kept in sync with auto-setup-and-serve.js, which now
+// does this automatically on every boot — this script is a backup/manual option).
 //
 // Usage:
 //   node rebuild-schema.js <BASE_URL> <ADMIN_EMAIL> <ADMIN_PASSWORD>
-//
-// Example:
-//   node rebuild-schema.js https://nexusdocs.onrender.com admin@example.com 8f2caa956349467d92e8327b
-//
-// Requires Node 18+ (built-in fetch).
 
 const [,, BASE, EMAIL, PASSWORD] = process.argv;
 
@@ -21,31 +16,23 @@ async function req(path, method, body, token) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
+    method, headers, body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`${method} ${path} -> ${res.status}: ${JSON.stringify(data)}`);
-  }
+  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}: ${JSON.stringify(data)}`);
   return data;
 }
 
 async function main() {
   console.log('Logging in as admin...');
-  const { token } = await req('/api/admins/auth-with-password', 'POST', {
-    identity: EMAIL, password: PASSWORD,
-  });
+  const { token } = await req('/api/admins/auth-with-password', 'POST', { identity: EMAIL, password: PASSWORD });
   console.log('Admin token acquired.\n');
 
   console.log('Creating users collection...');
   const users = await req('/api/collections', 'POST', {
-    name: 'users', type: 'auth',
-    fields: [{ name: 'name', type: 'text' }],
+    name: 'users', type: 'auth', fields: [{ name: 'name', type: 'text' }],
   }, token);
   console.log('  users:', users.id);
-
   await req(`/api/collections/${users.id}`, 'PATCH', { createRule: '' }, token);
   console.log('  users: public signup enabled\n');
 
@@ -59,6 +46,17 @@ async function main() {
     ],
   }, token);
   console.log('  workspaces:', workspaces.id, '\n');
+
+  console.log('Creating workspace_members collection (RBAC)...');
+  const workspaceMembers = await req('/api/collections', 'POST', {
+    name: 'workspace_members', type: 'base',
+    fields: [
+      { name: 'workspace', type: 'relation', collectionId: workspaces.id, required: true },
+      { name: 'user', type: 'relation', collectionId: users.id, required: true },
+      { name: 'role', type: 'select', values: ['owner', 'editor', 'viewer'], required: true },
+    ],
+  }, token);
+  console.log('  workspace_members:', workspaceMembers.id, '\n');
 
   console.log('Creating documents collection...');
   const documents = await req('/api/collections', 'POST', {
@@ -105,14 +103,19 @@ async function main() {
     updateRule: '@request.auth.id = owner', deleteRule: '@request.auth.id = owner',
   }, token);
 
-  await req(`/api/collections/${documents.id}`, 'PATCH', {
+  await req(`/api/collections/${workspaceMembers.id}`, 'PATCH', {
     listRule: authRule, viewRule: authRule, createRule: authRule,
-    updateRule: authRule, deleteRule: '@request.auth.id = author',
+    updateRule: authRule, deleteRule: '@request.auth.id = user',
+  }, token);
+
+  await req(`/api/collections/${documents.id}`, 'PATCH', {
+    listRule: '@request.auth.id = author', viewRule: '@request.auth.id = author',
+    createRule: authRule, updateRule: authRule, deleteRule: '@request.auth.id = author',
   }, token);
 
   await req(`/api/collections/${comments.id}`, 'PATCH', {
-    listRule: authRule, viewRule: authRule, createRule: authRule,
-    updateRule: '@request.auth.id = author', deleteRule: '@request.auth.id = author',
+    listRule: '@request.auth.id = author', viewRule: '@request.auth.id = author',
+    createRule: authRule, updateRule: '@request.auth.id = author', deleteRule: '@request.auth.id = author',
   }, token);
 
   await req(`/api/collections/${activity.id}`, 'PATCH', {
@@ -124,11 +127,12 @@ async function main() {
   console.log('SCHEMA REBUILD COMPLETE');
   console.log('========================================');
   console.log('Collection IDs:');
-  console.log('  users:        ', users.id);
-  console.log('  workspaces:   ', workspaces.id);
-  console.log('  documents:    ', documents.id);
-  console.log('  comments:     ', comments.id);
-  console.log('  activity_log: ', activity.id);
+  console.log('  users:            ', users.id);
+  console.log('  workspaces:       ', workspaces.id);
+  console.log('  workspace_members:', workspaceMembers.id);
+  console.log('  documents:        ', documents.id);
+  console.log('  comments:         ', comments.id);
+  console.log('  activity_log:     ', activity.id);
 }
 
 main().catch(err => {

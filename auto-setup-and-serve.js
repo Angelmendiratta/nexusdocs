@@ -107,6 +107,19 @@ async function ensureSuperuserAndSchema() {
     ],
   }, token);
 
+  // RBAC: workspace_members links a user to a workspace with a specific role.
+  // Kept as direct field matches (no relation traversal in rules) since
+  // relation-traversal filters (e.g. "workspace.owner = @request.auth.id")
+  // were found to be accepted but unreliable at runtime in this package.
+  const workspaceMembers = await req('/api/collections', 'POST', {
+    name: 'workspace_members', type: 'base',
+    fields: [
+      { name: 'workspace', type: 'relation', collectionId: workspaces.data.id, required: true },
+      { name: 'user', type: 'relation', collectionId: users.data.id, required: true },
+      { name: 'role', type: 'select', values: ['owner', 'editor', 'viewer'], required: true },
+    ],
+  }, token);
+
   const documents = await req('/api/collections', 'POST', {
     name: 'documents', type: 'base',
     fields: [
@@ -159,9 +172,31 @@ async function ensureSuperuserAndSchema() {
     listRule: authRule, viewRule: authRule, createRule: authRule,
   }, token);
 
+  // workspace_members rules:
+  // - Any authenticated user can list/view membership rows (needed so a
+  //   member can see who else is in a workspace, and so the frontend can
+  //   check "is the current user an editor/viewer/owner" via a filtered query).
+  // - createRule is intentionally permissive (any authenticated user) rather
+  //   than restricted to "only the workspace owner", because a reliable rule
+  //   for checking ownership of a *different* collection's record from here
+  //   isn't available given the relation-traversal reliability issues found
+  //   in this package. The frontend only exposes "add member" UI to owners,
+  //   so this is an app-layer restriction, not a DB-enforced one — documented
+  //   as a known trade-off, same pattern as prior visibility-rule decisions.
+  // - deleteRule allows a member to remove their OWN membership row (leave a
+  //   workspace) — this direct field match IS reliable, unlike relation
+  //   traversal, and was verified with the same pattern used successfully
+  //   for documents/comments (@request.auth.id = author works; cross-
+  //   collection checks don't).
+  await req(`/api/collections/${workspaceMembers.data.id}`, 'PATCH', {
+    listRule: authRule, viewRule: authRule, createRule: authRule,
+    updateRule: authRule, deleteRule: '@request.auth.id = user',
+  }, token);
+
   console.log('[auto-setup] Schema created successfully:');
   console.log('[auto-setup]   users:', users.data.id);
   console.log('[auto-setup]   workspaces:', workspaces.data.id);
+  console.log('[auto-setup]   workspace_members:', workspaceMembers.data.id);
   console.log('[auto-setup]   documents:', documents.data.id);
   console.log('[auto-setup]   comments:', comments.data.id);
   console.log('[auto-setup]   activity_log:', activity.data.id);
