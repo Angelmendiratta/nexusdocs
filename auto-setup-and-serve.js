@@ -213,11 +213,14 @@ async function createSchema(token) {
           required: true,
         },
         {
-          name: 'role',
-          type: 'select',
-          values: ['owner', 'editor', 'viewer'],
-          required: true,
-        },
+  name: 'role',
+  type: 'select',
+  required: true,
+  options: {
+    maxSelect: 1,
+    values: ['owner', 'editor', 'viewer'],
+  },
+}
       ],
     },
     token
