@@ -1,7 +1,7 @@
 // auto-setup-and-serve.js
 //
-// Starts Solarch, creates the schema if it is missing, and repairs the
-// important collection API rules on every boot.
+// Starts Solarch, creates the schema if it is missing, and repairs
+// collection API rules on every boot.
 //
 // Render Start Command:
 //   node auto-setup-and-serve.js
@@ -9,11 +9,7 @@
 // Recommended Render environment variables:
 //
 //   ADMIN_EMAIL=admin@example.com
-//   ADMIN_PASSWORD=<stable admin password>
-//
-// If ADMIN_PASSWORD is not set and a superuser does not already exist,
-// a random password is generated for this boot and printed to the logs.
-// For a persistent deployment, set ADMIN_PASSWORD in Render.
+//   ADMIN_PASSWORD=<stable-admin-password>
 
 const { spawn, execSync } = require('child_process');
 const crypto = require('crypto');
@@ -21,9 +17,12 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 8090;
 const BASE = `http://localhost:${PORT}`;
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com';
+const ADMIN_EMAIL =
+  process.env.ADMIN_EMAIL || 'admin@example.com';
+
 const ADMIN_PASSWORD =
-  process.env.ADMIN_PASSWORD || crypto.randomBytes(12).toString('hex');
+  process.env.ADMIN_PASSWORD ||
+  crypto.randomBytes(12).toString('hex');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -38,7 +37,7 @@ async function waitForServer(maxAttempts = 30) {
         return true;
       }
     } catch {
-      // Server is still starting.
+      // Solarch is still starting.
     }
 
     await sleep(1000);
@@ -83,16 +82,13 @@ async function createSuperuserIfNeeded() {
     );
 
     console.log('========================================');
-    console.log('[auto-setup] Superuser created:');
+    console.log('[auto-setup] Superuser created');
     console.log('[auto-setup] Email:', ADMIN_EMAIL);
     console.log('[auto-setup] Password:', ADMIN_PASSWORD);
     console.log('========================================');
   } catch {
     console.log(
       '[auto-setup] Superuser already exists or could not be created.'
-    );
-    console.log(
-      '[auto-setup] Will try the configured ADMIN_PASSWORD.'
     );
   }
 }
@@ -108,14 +104,10 @@ async function adminLogin() {
   );
 
   if (!login.ok || !login.data.token) {
+    console.log('[auto-setup] Admin login failed.');
     console.log(
-      '[auto-setup] Admin login failed.'
+      '[auto-setup] Check ADMIN_EMAIL and ADMIN_PASSWORD in Render.'
     );
-
-    console.log(
-      '[auto-setup] Make sure ADMIN_EMAIL and ADMIN_PASSWORD are correct in Render.'
-    );
-
     return null;
   }
 
@@ -213,14 +205,14 @@ async function createSchema(token) {
           required: true,
         },
         {
-  name: 'role',
-  type: 'select',
-  required: true,
-  options: {
-    maxSelect: 1,
-    values: ['owner', 'editor', 'viewer'],
-  },
-}
+          // IMPORTANT:
+          // Use text instead of select. The frontend already restricts
+          // this to "editor" or "viewer", while the owner role is handled
+          // by workspace.owner.
+          name: 'role',
+          type: 'text',
+          required: true,
+        },
       ],
     },
     token
@@ -280,9 +272,7 @@ async function createSchema(token) {
 
   if (!documents.ok) {
     throw new Error(
-      `Failed creating documents: ${JSON.stringify(
-        documents.data
-      )}`
+      `Failed creating documents: ${JSON.stringify(documents.data)}`
     );
   }
 
@@ -319,9 +309,7 @@ async function createSchema(token) {
 
   if (!comments.ok) {
     throw new Error(
-      `Failed creating comments: ${JSON.stringify(
-        comments.data
-      )}`
+      `Failed creating comments: ${JSON.stringify(comments.data)}`
     );
   }
 
@@ -362,13 +350,11 @@ async function createSchema(token) {
 
   if (!activity.ok) {
     throw new Error(
-      `Failed creating activity_log: ${JSON.stringify(
-        activity.data
-      )}`
+      `Failed creating activity_log: ${JSON.stringify(activity.data)}`
     );
   }
 
-  console.log('[auto-setup] Collections created successfully.');
+  console.log('[auto-setup] Collections created.');
 }
 
 async function getCollections(token) {
@@ -391,7 +377,7 @@ async function getCollections(token) {
     items.map(collection => [collection.name, collection])
   );
 
-  const requiredCollections = [
+  const required = [
     'users',
     'workspaces',
     'workspace_members',
@@ -400,29 +386,150 @@ async function getCollections(token) {
     'activity_log',
   ];
 
-  for (const name of requiredCollections) {
+  for (const name of required) {
     if (!byName[name]) {
-      throw new Error(
-        `Collection "${name}" is missing.`
-      );
+      throw new Error(`Collection "${name}" is missing.`);
     }
   }
 
   return byName;
 }
 
+async function repairWorkspaceMembersField(token, collection) {
+  console.log(
+    '[auto-setup] Checking workspace_members.role field...'
+  );
+
+  // Fetch the complete collection definition.
+  const result = await req(
+    `/api/collections/${collection.id}`,
+    'GET',
+    null,
+    token
+  );
+
+  if (!result.ok) {
+    console.log(
+      '[auto-setup] Could not inspect workspace_members schema:',
+      JSON.stringify(result.data)
+    );
+    return;
+  }
+
+  const current = result.data;
+
+  if (!Array.isArray(current.fields)) {
+    console.log(
+      '[auto-setup] workspace_members has no readable fields array; skipping field migration.'
+    );
+    return;
+  }
+
+  const roleField = current.fields.find(
+    field => field.name === 'role'
+  );
+
+  if (!roleField) {
+    console.log(
+      '[auto-setup] role field is missing. Adding it...'
+    );
+
+    const newFields = [
+      ...current.fields,
+      {
+        name: 'role',
+        type: 'text',
+        required: true,
+      },
+    ];
+
+    const patch = await req(
+      `/api/collections/${collection.id}`,
+      'PATCH',
+      {
+        fields: newFields,
+      },
+      token
+    );
+
+    if (!patch.ok) {
+      console.log(
+        '[auto-setup] Failed adding role field:',
+        JSON.stringify(patch.data)
+      );
+    } else {
+      console.log(
+        '[auto-setup] role field added as required text.'
+      );
+    }
+
+    return;
+  }
+
+  if (roleField.type === 'text') {
+    console.log(
+      '[auto-setup] workspace_members.role is already a text field.'
+    );
+    return;
+  }
+
+  // If role is still the old select field, attempt to convert it.
+  console.log(
+    `[auto-setup] workspace_members.role is "${roleField.type}". Converting to text...`
+  );
+
+  const updatedFields = current.fields.map(field => {
+    if (field.name !== 'role') {
+      return field;
+    }
+
+    // Preserve everything else we can, but replace the field type.
+    const replacement = {
+      ...field,
+      type: 'text',
+      required: true,
+    };
+
+    // Remove select-specific properties if present.
+    delete replacement.options;
+    delete replacement.values;
+    delete replacement.maxSelect;
+    delete replacement.collectionId;
+
+    return replacement;
+  });
+
+  const patch = await req(
+    `/api/collections/${collection.id}`,
+    'PATCH',
+    {
+      fields: updatedFields,
+    },
+    token
+  );
+
+  if (!patch.ok) {
+    console.log(
+      '[auto-setup] Could not migrate role field automatically:',
+      JSON.stringify(patch.data)
+    );
+
+    console.log(
+      '[auto-setup] Open Solarch admin → workspace_members → role and change it to required text.'
+    );
+  } else {
+    console.log(
+      '[auto-setup] workspace_members.role converted to required text.'
+    );
+  }
+}
+
 async function repairRules(token, collections) {
-  // IMPORTANT:
-  // Declare this ONLY ONCE in this function.
   const authRule = '@request.auth.id != ""';
 
   // ------------------------------------------------------------
   // USERS
   // ------------------------------------------------------------
-  //
-  // Signup stays public.
-  // Authenticated users can search/view existing users.
-  // This is required by the Members UI which looks up a user by email.
 
   const usersResult = await req(
     `/api/collections/${collections.users.id}`,
@@ -430,6 +537,8 @@ async function repairRules(token, collections) {
     {
       listRule: authRule,
       viewRule: authRule,
+
+      // Public signup.
       createRule: '',
     },
     token
@@ -446,7 +555,7 @@ async function repairRules(token, collections) {
   // WORKSPACES
   // ------------------------------------------------------------
 
-  const workspacesResult = await req(
+  await req(
     `/api/collections/${collections.workspaces.id}`,
     'PATCH',
     {
@@ -459,18 +568,11 @@ async function repairRules(token, collections) {
     token
   );
 
-  if (!workspacesResult.ok) {
-    console.log(
-      '[auto-setup] Failed repairing workspace rules:',
-      JSON.stringify(workspacesResult.data)
-    );
-  }
-
   // ------------------------------------------------------------
   // WORKSPACE MEMBERS
   // ------------------------------------------------------------
 
-  const membersResult = await req(
+  await req(
     `/api/collections/${collections.workspace_members.id}`,
     'PATCH',
     {
@@ -483,18 +585,11 @@ async function repairRules(token, collections) {
     token
   );
 
-  if (!membersResult.ok) {
-    console.log(
-      '[auto-setup] Failed repairing workspace_members rules:',
-      JSON.stringify(membersResult.data)
-    );
-  }
-
   // ------------------------------------------------------------
   // DOCUMENTS
   // ------------------------------------------------------------
 
-  const documentsResult = await req(
+  await req(
     `/api/collections/${collections.documents.id}`,
     'PATCH',
     {
@@ -507,18 +602,11 @@ async function repairRules(token, collections) {
     token
   );
 
-  if (!documentsResult.ok) {
-    console.log(
-      '[auto-setup] Failed repairing document rules:',
-      JSON.stringify(documentsResult.data)
-    );
-  }
-
   // ------------------------------------------------------------
   // COMMENTS
   // ------------------------------------------------------------
 
-  const commentsResult = await req(
+  await req(
     `/api/collections/${collections.comments.id}`,
     'PATCH',
     {
@@ -531,18 +619,11 @@ async function repairRules(token, collections) {
     token
   );
 
-  if (!commentsResult.ok) {
-    console.log(
-      '[auto-setup] Failed repairing comment rules:',
-      JSON.stringify(commentsResult.data)
-    );
-  }
-
   // ------------------------------------------------------------
   // ACTIVITY LOG
   // ------------------------------------------------------------
 
-  const activityResult = await req(
+  await req(
     `/api/collections/${collections.activity_log.id}`,
     'PATCH',
     {
@@ -552,13 +633,6 @@ async function repairRules(token, collections) {
     },
     token
   );
-
-  if (!activityResult.ok) {
-    console.log(
-      '[auto-setup] Failed repairing activity_log rules:',
-      JSON.stringify(activityResult.data)
-    );
-  }
 
   console.log('[auto-setup] API rules repaired.');
 }
@@ -574,7 +648,6 @@ async function ensureSuperuserAndSchema() {
 
   let collections;
 
-  // Check whether the schema already exists.
   const workspaceCheck = await req(
     '/api/collections/workspaces/records',
     'GET',
@@ -590,12 +663,19 @@ async function ensureSuperuserAndSchema() {
     );
   }
 
-  // IMPORTANT:
-  // This happens whether the schema was newly created OR already existed.
-  // Therefore the updated users/RBAC rules are always repaired.
   collections = await getCollections(token);
 
-  await repairRules(token, collections);
+  // IMPORTANT:
+  // This runs even when the schema already existed.
+  await repairWorkspaceMembersField(
+    token,
+    collections.workspace_members
+  );
+
+  await repairRules(
+    token,
+    collections
+  );
 
   console.log(
     '[auto-setup] Startup schema/rule checks complete.'
@@ -609,7 +689,12 @@ async function main() {
 
   const server = spawn(
     'npx',
-    ['solarch', 'serve', '--port', PORT],
+    [
+      'solarch',
+      'serve',
+      '--port',
+      PORT,
+    ],
     {
       stdio: 'inherit',
       shell: true,

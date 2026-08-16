@@ -60,16 +60,21 @@ async function main() {
     }
   );
 
-  console.log('Admin token acquired.\n');
+  console.log(
+    'Admin token acquired.\n'
+  );
 
-  // Declare once and reuse everywhere.
-  const authRule = '@request.auth.id != ""';
+  // Only one declaration.
+  const authRule =
+    '@request.auth.id != ""';
 
   // ============================================================
   // USERS
   // ============================================================
 
-  console.log('Creating users collection...');
+  console.log(
+    'Creating users collection...'
+  );
 
   const users = await req(
     '/api/collections',
@@ -91,12 +96,11 @@ async function main() {
     `/api/collections/${users.id}`,
     'PATCH',
     {
-      // Existing authenticated users can be searched/viewed
-      // by the Members feature.
+      // Allow authenticated users to find existing users by email.
       listRule: authRule,
       viewRule: authRule,
 
-      // Public signup remains enabled.
+      // Keep public signup enabled.
       createRule: '',
     },
     token
@@ -112,7 +116,9 @@ async function main() {
   // WORKSPACES
   // ============================================================
 
-  console.log('Creating workspaces collection...');
+  console.log(
+    'Creating workspaces collection...'
+  );
 
   const workspaces = await req(
     '/api/collections',
@@ -176,14 +182,12 @@ async function main() {
           required: true,
         },
         {
-  name: 'role',
-  type: 'select',
-  required: true,
-  options: {
-    maxSelect: 1,
-    values: ['owner', 'editor', 'viewer'],
-  },
-}
+          // IMPORTANT:
+          // role is now plain text.
+          name: 'role',
+          type: 'text',
+          required: true,
+        },
       ],
     },
     token
@@ -199,7 +203,9 @@ async function main() {
   // DOCUMENTS
   // ============================================================
 
-  console.log('Creating documents collection...');
+  console.log(
+    'Creating documents collection...'
+  );
 
   const documents = await req(
     '/api/collections',
@@ -251,7 +257,9 @@ async function main() {
   // COMMENTS
   // ============================================================
 
-  console.log('Creating comments collection...');
+  console.log(
+    'Creating comments collection...'
+  );
 
   const comments = await req(
     '/api/collections',
@@ -290,7 +298,9 @@ async function main() {
   // ACTIVITY LOG
   // ============================================================
 
-  console.log('Creating activity_log collection...');
+  console.log(
+    'Creating activity_log collection...'
+  );
 
   const activity = await req(
     '/api/collections',
@@ -333,11 +343,11 @@ async function main() {
   // API RULES
   // ============================================================
 
-  console.log('Setting API rules...');
+  console.log(
+    'Setting API rules...'
+  );
 
-  // ------------------------------------------------------------
   // WORKSPACES
-  // ------------------------------------------------------------
 
   await req(
     `/api/collections/${workspaces.id}`,
@@ -352,9 +362,7 @@ async function main() {
     token
   );
 
-  // ------------------------------------------------------------
   // WORKSPACE MEMBERS
-  // ------------------------------------------------------------
 
   await req(
     `/api/collections/${workspaceMembers.id}`,
@@ -369,9 +377,7 @@ async function main() {
     token
   );
 
-  // ------------------------------------------------------------
   // DOCUMENTS
-  // ------------------------------------------------------------
 
   await req(
     `/api/collections/${documents.id}`,
@@ -386,9 +392,7 @@ async function main() {
     token
   );
 
-  // ------------------------------------------------------------
   // COMMENTS
-  // ------------------------------------------------------------
 
   await req(
     `/api/collections/${comments.id}`,
@@ -403,9 +407,7 @@ async function main() {
     token
   );
 
-  // ------------------------------------------------------------
-  // ACTIVITY
-  // ------------------------------------------------------------
+  // ACTIVITY LOG
 
   await req(
     `/api/collections/${activity.id}`,
@@ -432,7 +434,9 @@ async function main() {
     '========================================'
   );
 
-  console.log('Collection IDs:');
+  console.log(
+    'Collection IDs:'
+  );
 
   console.log(
     '  users:            ',
