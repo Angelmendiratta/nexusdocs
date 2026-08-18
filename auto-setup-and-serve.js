@@ -205,14 +205,10 @@ async function createSchema(token) {
           required: true,
         },
         {
-          // IMPORTANT:
-          // Use text instead of select. The frontend already restricts
-          // this to "editor" or "viewer", while the owner role is handled
-          // by workspace.owner.
-          name: 'role',
-          type: 'text',
-          required: true,
-        },
+            name: 'member_role',
+            type: 'text',
+            required: true,
+},
       ],
     },
     token
@@ -667,10 +663,10 @@ async function ensureSuperuserAndSchema() {
 
   // IMPORTANT:
   // This runs even when the schema already existed.
-  await repairWorkspaceMembersField(
-    token,
-    collections.workspace_members
-  );
+//   await repairWorkspaceMembersField(
+//     token,
+//     collections.workspace_members
+//   );
 
   await repairRules(
     token,

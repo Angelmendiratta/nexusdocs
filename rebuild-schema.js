@@ -182,12 +182,10 @@ async function main() {
           required: true,
         },
         {
-          // IMPORTANT:
-          // role is now plain text.
-          name: 'role',
+          name: 'member_role',
           type: 'text',
           required: true,
-        },
+},
       ],
     },
     token
