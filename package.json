@@ -3,13 +3,16 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node setup-admin.js && solarch serve --port $PORT"
+    "start": "solarch serve --port $PORT"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "solarch": "^0.15.6"
+    "solarch": "^0.19.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
   }
 }
