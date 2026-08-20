@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "solarch serve --port $PORT",
-    "postinstall": "patch-package"
+    "postinstall": "node scripts/patch-solarch-postinstall.js"
   },
   "keywords": [],
   "author": "",
