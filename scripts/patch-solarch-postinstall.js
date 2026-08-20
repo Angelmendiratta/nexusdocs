@@ -125,11 +125,7 @@ patchFile('core/record_query.js', [
       'const rows = await app.db().query(`SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`, [...params, limit, offset]);',
 
     newText:
-      'const query = limit < 0\\n' +
-      '  ? `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy}`\\n' +
-      '  : `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;\\n' +
-      'const queryParams = limit < 0 ? params : [...params, limit, offset];\\n' +
-      'const rows = await app.db().query(query, queryParams);',
+  'const query = limit < 0 ? `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy}` : `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`; const queryParams = limit < 0 ? params : [...params, limit, offset]; const rows = await app.db().query(query, queryParams);',
   },
 ]);
 console.log('[Solarch patch] PostgreSQL compatibility patch complete.');
