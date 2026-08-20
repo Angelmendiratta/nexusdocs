@@ -1,13 +1,16 @@
 diff --git a/node_modules/solarch/dist/apis/admin_auth.js b/node_modules/solarch/dist/apis/admin_auth.js
-index 84250b6..f1e8c95 100644
+index 84250b6..e2b529d 100644
 --- a/node_modules/solarch/dist/apis/admin_auth.js
 +++ b/node_modules/solarch/dist/apis/admin_auth.js
-@@ -72,7 +72,7 @@ function registerAdminAuthRoutes(app, router) {
+@@ -72,7 +72,10 @@ function registerAdminAuthRoutes(app, router) {
                  (0, lockout_1.recordFailedAttempt)(`admin:${identity.toLowerCase()}`);
                  return res.status(400).json((0, api_errors_1.createApiError)(400, 'UNAUTHORIZED', 'Invalid credentials.'));
              }
 -            const valid = await (0, crypto_1.verifyPassword)(password, row.passwordHash);
-+            const valid = await (0, crypto_1.verifyPassword)(password, row.passwordHash ?? row.passwordhash);
++            const valid = await (0, crypto_1.verifyPassword)(
++                password,
++                row.passwordHash ?? row.passwordhash
++                );
              if (!valid) {
                  (0, lockout_1.recordFailedAttempt)(`admin:${identity.toLowerCase()}`);
                  return res.status(400).json((0, api_errors_1.createApiError)(400, 'UNAUTHORIZED', 'Invalid credentials.'));
