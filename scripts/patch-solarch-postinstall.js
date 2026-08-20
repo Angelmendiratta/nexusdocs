@@ -36,7 +36,7 @@ function patchFile(relativePath, replacements) {
       }
 
       throw new Error(
-        `[Solarch patch] Expected text not found in ${fileName}:\n${oldText}`
+        `[Solarch patch] Expected text not found in ${relativePath}:\n${oldText}`
       );
     }
 
