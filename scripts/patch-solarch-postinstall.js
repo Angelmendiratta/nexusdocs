@@ -19,8 +19,8 @@ function patchRegex(relativePath, regex, replacement, alreadyPatchedRegex) {
 
   let source = fs.readFileSync(filePath, 'utf8');
 
-  // Already patched: leave it alone.
-  if (alreadyPatchedRegex && alreadyPatchedRegex.test(source)) {
+  // If this version is already patched, do nothing.
+  if (alreadyPatchedRegex.test(source)) {
     console.log(`[Solarch patch] Already patched ${relativePath}`);
     return;
   }
@@ -34,12 +34,13 @@ function patchRegex(relativePath, regex, replacement, alreadyPatchedRegex) {
   source = source.replace(regex, replacement);
 
   fs.writeFileSync(filePath, source, 'utf8');
+
   console.log(`[Solarch patch] Patched ${relativePath}`);
 }
 
 // =========================================================
 // 1. admin_auth.js
-// PostgreSQL may return passwordHash as passwordhash.
+// PostgreSQL can return passwordHash as passwordhash.
 // =========================================================
 
 patchRegex(
@@ -63,7 +64,7 @@ patchRegex(
 
   'const passwordHash = row.passwordHash ?? row.passwordhash;',
 
-  /const passwordHash = row\.passwordHash \?\? row\.passwordhash;/
+  /const passwordHash = row\.passwordHash\s*\?\?\s*row\.passwordhash;/
 );
 
 patchRegex(
@@ -115,20 +116,17 @@ patchRegex(
 //
 // Solarch uses -1 as NO_CANDIDATE_LIMIT.
 // PostgreSQL rejects LIMIT -1.
-//
-// When limit < 0, omit LIMIT/OFFSET entirely.
+// Replace -1 with a large positive value.
 // =========================================================
 
 patchRegex(
   'core/record_query.js',
 
-  /const rows = await app\.db\(\)\.query\(`SELECT \* FROM \$\{qt\} \$\{whereClause\} ORDER BY \$\{orderBy\} LIMIT \? OFFSET \?`,\s*\[\.\.\.params, limit, offset\]\);/,
+  /exports\.NO_CANDIDATE_LIMIT = -1;/,
 
-  'const query = limit < 0 ? `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy}` : `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;\n' +
-  '    const queryParams = limit < 0 ? params : [...params, limit, offset];\n' +
-  '    const rows = await app.db().query(query, queryParams);',
+  'exports.NO_CANDIDATE_LIMIT = 2147483647;',
 
-  /const query = limit < 0 \? `SELECT \* FROM \$\{qt\} \$\{whereClause\} ORDER BY \$\{orderBy\}`/
+  /exports\.NO_CANDIDATE_LIMIT = 2147483647;/
 );
 
 console.log('[Solarch patch] PostgreSQL compatibility patch complete.');
