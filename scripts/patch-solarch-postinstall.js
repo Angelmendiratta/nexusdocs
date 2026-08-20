@@ -113,5 +113,17 @@ patchFile('auth_flows.js', [
     newText: 'SET "lastVerificationSentAt" = ?',
   },
 ]);
+patchFile('record_query.js', [
+  {
+    oldText:
+      'const rows = await app.db().query(`SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`, [...params, limit, offset]);',
 
+    newText:
+      'const query = limit < 0\\n' +
+      '  ? `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy}`\\n' +
+      '  : `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;\\n' +
+      'const queryParams = limit < 0 ? params : [...params, limit, offset];\\n' +
+      'const rows = await app.db().query(query, queryParams);',
+  },
+]);
 console.log('[Solarch patch] PostgreSQL compatibility patch complete.');
