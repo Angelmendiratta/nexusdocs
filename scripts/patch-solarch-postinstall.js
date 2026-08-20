@@ -3,22 +3,15 @@
 const fs = require('fs');
 const path = require('path');
 
-const solarchRoot = path.join(
+const solarchDist = path.join(
   process.cwd(),
   'node_modules',
   'solarch',
-  'dist',
-  'apis'
+  'dist'
 );
 
-function patchFile(relativePath, replacements) {
-  const filePath = path.join(
-    process.cwd(),
-    'node_modules',
-    'solarch',
-    'dist',
-    relativePath
-  );
+function patchRegex(relativePath, regex, replacement, alreadyPatchedRegex) {
+  const filePath = path.join(solarchDist, relativePath);
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`[Solarch patch] Missing file: ${filePath}`);
@@ -26,106 +19,116 @@ function patchFile(relativePath, replacements) {
 
   let source = fs.readFileSync(filePath, 'utf8');
 
-  for (const { oldText, newText, expectedCount = 1 } of replacements) {
-    const count = source.split(oldText).length - 1;
-
-    if (count === 0) {
-      // Already patched.
-      if (source.includes(newText)) {
-        continue;
-      }
-
-      throw new Error(
-        `[Solarch patch] Expected text not found in ${relativePath}:\n${oldText}`
-      );
-    }
-
-    if (count !== expectedCount) {
-      throw new Error(
-        `[Solarch patch] Expected ${expectedCount} occurrence(s) of text in ${fileName}, found ${count}:\n${oldText}`
-      );
-    }
-
-    source = source.split(oldText).join(newText);
+  // Already patched: leave it alone.
+  if (alreadyPatchedRegex && alreadyPatchedRegex.test(source)) {
+    console.log(`[Solarch patch] Already patched ${relativePath}`);
+    return;
   }
+
+  if (!regex.test(source)) {
+    throw new Error(
+      `[Solarch patch] Expected code not found in ${relativePath}`
+    );
+  }
+
+  source = source.replace(regex, replacement);
 
   fs.writeFileSync(filePath, source, 'utf8');
   console.log(`[Solarch patch] Patched ${relativePath}`);
 }
 
-if (!fs.existsSync(solarchRoot)) {
-  throw new Error(
-    `[Solarch patch] Solarch is not installed at ${solarchRoot}`
-  );
-}
-
-// ---------------------------------------------------------
-// admin_auth.js
+// =========================================================
+// 1. admin_auth.js
 // PostgreSQL may return passwordHash as passwordhash.
-// ---------------------------------------------------------
+// =========================================================
 
-patchFile('apis/admin_auth.js', [
-  {
-    oldText:
-      'const valid = await (0, crypto_1.verifyPassword)(password, row.passwordHash);',
+patchRegex(
+  'apis/admin_auth.js',
 
-    newText:
-      'const valid = await (0, crypto_1.verifyPassword)(password, row.passwordHash ?? row.passwordhash);',
-  },
-]);
+  /const valid = await \(0, crypto_1\.verifyPassword\)\(password,\s*row\.passwordHash\);/,
 
-// ---------------------------------------------------------
-// record_auth.js
-// ---------------------------------------------------------
+  'const valid = await (0, crypto_1.verifyPassword)(password, row.passwordHash ?? row.passwordhash);',
 
-patchFile('apis/record_auth.js', [
-  {
-    oldText:
-      'const passwordHash = row.passwordHash;',
+  /row\.passwordHash\s*\?\?\s*row\.passwordhash/
+);
 
-    newText:
-      'const passwordHash = row.passwordHash ?? row.passwordhash;',
-  },
+// =========================================================
+// 2. record_auth.js
+// =========================================================
 
-  {
-    oldText: 'SET lastLoginAt = ?',
+patchRegex(
+  'apis/record_auth.js',
 
-    newText: 'SET "lastLoginAt" = ?',
+  /const passwordHash = row\.passwordHash;/,
 
-    expectedCount: 3,
-  },
-]);
+  'const passwordHash = row.passwordHash ?? row.passwordhash;',
 
-// ---------------------------------------------------------
-// auth_flows.js
-// ---------------------------------------------------------
+  /const passwordHash = row\.passwordHash \?\? row\.passwordhash;/
+);
 
-patchFile('apis/auth_flows.js', [
-  {
-    oldText: 'SET lastResetSentAt = ?',
+patchRegex(
+  'apis/record_auth.js',
 
-    newText: 'SET "lastResetSentAt" = ?',
-  },
+  /SET lastLoginAt = \?/g,
 
-  {
-    oldText: 'SET passwordHash = ?',
+  'SET "lastLoginAt" = ?',
 
-    newText: 'SET "passwordHash" = ?',
-  },
+  /SET "lastLoginAt" = \?/
+);
 
-  {
-    oldText: 'SET lastVerificationSentAt = ?',
+// =========================================================
+// 3. auth_flows.js
+// =========================================================
 
-    newText: 'SET "lastVerificationSentAt" = ?',
-  },
-]);
-patchFile('core/record_query.js', [
-  {
-    oldText:
-      'const rows = await app.db().query(`SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`, [...params, limit, offset]);',
+patchRegex(
+  'apis/auth_flows.js',
 
-    newText:
-  'const query = limit < 0 ? `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy}` : `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`; const queryParams = limit < 0 ? params : [...params, limit, offset]; const rows = await app.db().query(query, queryParams);',
-  },
-]);
+  /SET lastResetSentAt = \?/g,
+
+  'SET "lastResetSentAt" = ?',
+
+  /SET "lastResetSentAt" = \?/
+);
+
+patchRegex(
+  'apis/auth_flows.js',
+
+  /SET passwordHash = \?/g,
+
+  'SET "passwordHash" = ?',
+
+  /SET "passwordHash" = \?/
+);
+
+patchRegex(
+  'apis/auth_flows.js',
+
+  /SET lastVerificationSentAt = \?/g,
+
+  'SET "lastVerificationSentAt" = ?',
+
+  /SET "lastVerificationSentAt" = \?/
+);
+
+// =========================================================
+// 4. record_query.js
+//
+// Solarch uses -1 as NO_CANDIDATE_LIMIT.
+// PostgreSQL rejects LIMIT -1.
+//
+// When limit < 0, omit LIMIT/OFFSET entirely.
+// =========================================================
+
+patchRegex(
+  'core/record_query.js',
+
+  /const rows = await app\.db\(\)\.query\(`SELECT \* FROM \$\{qt\} \$\{whereClause\} ORDER BY \$\{orderBy\} LIMIT \? OFFSET \?`,\s*\[\.\.\.params, limit, offset\]\);/,
+
+  'const query = limit < 0 ? `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy}` : `SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;\n' +
+  '    const queryParams = limit < 0 ? params : [...params, limit, offset];\n' +
+  '    const rows = await app.db().query(query, queryParams);',
+
+  /const query = limit < 0 \? `SELECT \* FROM \$\{qt\} \$\{whereClause\} ORDER BY \$\{orderBy\}`/
+);
+
 console.log('[Solarch patch] PostgreSQL compatibility patch complete.');
