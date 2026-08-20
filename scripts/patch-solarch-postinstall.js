@@ -50,7 +50,7 @@ function patchFile(relativePath, replacements) {
   }
 
   fs.writeFileSync(filePath, source, 'utf8');
-  console.log(`[Solarch patch] Patched ${fileName}`);
+  console.log(`[Solarch patch] Patched ${relativePath}`);
 }
 
 if (!fs.existsSync(solarchRoot)) {
