@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "solarch serve --port $PORT"
+    "start": "solarch serve --port $PORT",
+    "postinstall": "patch-package"
   },
   "keywords": [],
   "author": "",
@@ -13,6 +14,7 @@
     "solarch": "^0.19.8"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0"
+    "@types/node": "^26.2.0",
+    "patch-package": "^8.0.1"
   }
 }
