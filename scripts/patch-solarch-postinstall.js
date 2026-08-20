@@ -11,8 +11,14 @@ const solarchRoot = path.join(
   'apis'
 );
 
-function patchFile(fileName, replacements) {
-  const filePath = path.join(solarchRoot, fileName);
+function patchFile(relativePath, replacements) {
+  const filePath = path.join(
+    process.cwd(),
+    'node_modules',
+    'solarch',
+    'dist',
+    relativePath
+  );
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`[Solarch patch] Missing file: ${filePath}`);
@@ -58,7 +64,7 @@ if (!fs.existsSync(solarchRoot)) {
 // PostgreSQL may return passwordHash as passwordhash.
 // ---------------------------------------------------------
 
-patchFile('admin_auth.js', [
+patchFile('apis/admin_auth.js', [
   {
     oldText:
       'const valid = await (0, crypto_1.verifyPassword)(password, row.passwordHash);',
@@ -72,7 +78,7 @@ patchFile('admin_auth.js', [
 // record_auth.js
 // ---------------------------------------------------------
 
-patchFile('record_auth.js', [
+patchFile('apis/record_auth.js', [
   {
     oldText:
       'const passwordHash = row.passwordHash;',
@@ -94,7 +100,7 @@ patchFile('record_auth.js', [
 // auth_flows.js
 // ---------------------------------------------------------
 
-patchFile('auth_flows.js', [
+patchFile('apis/auth_flows.js', [
   {
     oldText: 'SET lastResetSentAt = ?',
 
@@ -113,7 +119,7 @@ patchFile('auth_flows.js', [
     newText: 'SET "lastVerificationSentAt" = ?',
   },
 ]);
-patchFile('record_query.js', [
+patchFile('core/record_query.js', [
   {
     oldText:
       'const rows = await app.db().query(`SELECT * FROM ${qt} ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`, [...params, limit, offset]);',
