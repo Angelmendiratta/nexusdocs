@@ -19,7 +19,6 @@ function patchRegex(relativePath, regex, replacement, alreadyPatchedRegex) {
 
   let source = fs.readFileSync(filePath, 'utf8');
 
-  // If this version is already patched, do nothing.
   if (alreadyPatchedRegex.test(source)) {
     console.log(`[Solarch patch] Already patched ${relativePath}`);
     return;
@@ -116,7 +115,6 @@ patchRegex(
 //
 // Solarch uses -1 as NO_CANDIDATE_LIMIT.
 // PostgreSQL rejects LIMIT -1.
-// Replace -1 with a large positive value.
 // =========================================================
 
 patchRegex(
@@ -130,7 +128,7 @@ patchRegex(
 );
 
 // =========================================================
-// NexusDocs authorization patch
+// 5. NexusDocs authorization
 // =========================================================
 
 const recordHelpersPath = path.join(
@@ -145,23 +143,40 @@ if (!fs.existsSync(recordHelpersPath)) {
   );
 }
 
-let recordHelpers = fs.readFileSync(recordHelpersPath, 'utf8');
+let recordHelpers = fs.readFileSync(
+  recordHelpersPath,
+  'utf8'
+);
 
-const originalCanAccess = `async function canAccessRecord(app, record, collection, rule, requestInfo, skipAdminBypass = false) {
-    if (!skipAdminBypass && requestInfo.isAdmin) {
-        return true;
-    }
-    if (rule === '')
-        return true;
-    if (!rule)
-        return false;
-    const resolver = new record_field_resolver_1.RecordFieldResolver({
-        record,
-        collection,
-        requestInfo,
-    });
-    return (0, record_field_resolver_1.evaluateRule)(rule, resolver);
-}`;
+// ---------------------------------------------------------
+// Find the complete canAccessRecord function dynamically.
+// This avoids depending on whitespace/formatting changes
+// between Solarch versions or previous patches.
+// ---------------------------------------------------------
+
+const canAccessStart = recordHelpers.indexOf(
+  'async function canAccessRecord('
+);
+
+if (canAccessStart === -1) {
+  throw new Error(
+    '[Solarch patch] Could not find canAccessRecord()'
+  );
+}
+
+// Find the end of canAccessRecord().
+// The function ends immediately before:
+// async function checkCollectionAccess
+const canAccessEnd = recordHelpers.indexOf(
+  'async function checkCollectionAccess',
+  canAccessStart
+);
+
+if (canAccessEnd === -1) {
+  throw new Error(
+    '[Solarch patch] Could not find end of canAccessRecord()'
+  );
+}
 
 const patchedCanAccess = `async function canAccessRecord(app, record, collection, rule, requestInfo, skipAdminBypass = false) {
     if (!skipAdminBypass && requestInfo.isAdmin) {
@@ -176,17 +191,32 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
         return false;
     }
 
-    const authId = requestInfo?.auth?.id;
+    const authId =
+        requestInfo?.auth?.id ??
+        requestInfo?.auth?.get?.('id');
+
     const context = requestInfo?.context;
     const collectionName = collection?.name;
+
+    console.log(
+        '[NexusAuth]',
+        JSON.stringify({
+            collection: collectionName,
+            context,
+            authId,
+            recordId: record?.id,
+            workspaceId: record?.get?.('workspace')
+        })
+    );
 
     if (!authId) {
         return false;
     }
 
-    // -----------------------------------------------------
+    // =====================================================
     // WORKSPACES
-    // -----------------------------------------------------
+    // Owner OR member
+    // =====================================================
 
     if (collectionName === 'workspaces') {
         const owner = record.get('owner');
@@ -203,9 +233,10 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
         return !!membership;
     }
 
-    // -----------------------------------------------------
+    // =====================================================
     // WORKSPACE MEMBERS
-    // -----------------------------------------------------
+    // Only workspace owner can manage members
+    // =====================================================
 
     if (collectionName === 'workspace_members') {
         const workspaceId = record.get('workspace');
@@ -222,14 +253,19 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
         return !!workspace && workspace.owner === authId;
     }
 
-    // -----------------------------------------------------
+    // =====================================================
     // DOCUMENTS
-    // -----------------------------------------------------
+    //
+    // Owner  -> full access
+    // Editor -> read/write
+    // Viewer -> read only
+    // Other -> no access
+    // =====================================================
 
     if (collectionName === 'documents') {
         const workspaceId = record.get('workspace');
 
-        // Personal document without a workspace.
+        // Personal document.
         if (!workspaceId) {
             return record.get('author') === authId;
         }
@@ -243,7 +279,7 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
             return false;
         }
 
-        // Owner has full access.
+        // Workspace owner.
         if (workspace.owner === authId) {
             return true;
         }
@@ -257,18 +293,18 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
             return false;
         }
 
-        // Viewer can only read.
+        // Viewer and editor can read.
         if (context === 'list' || context === 'view') {
             return true;
         }
 
-        // Editor can write.
+        // Only editor can modify.
         return membership.member_role === 'editor';
     }
 
-    // -----------------------------------------------------
+    // =====================================================
     // COMMENTS
-    // -----------------------------------------------------
+    // =====================================================
 
     if (collectionName === 'comments') {
         const documentId = record.get('document');
@@ -295,6 +331,7 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
             return false;
         }
 
+        // Owner.
         if (workspace.owner === authId) {
             return true;
         }
@@ -308,52 +345,55 @@ const patchedCanAccess = `async function canAccessRecord(app, record, collection
             return false;
         }
 
+        // Anyone with workspace access can read comments.
         if (context === 'list' || context === 'view') {
             return true;
         }
 
+        // Users can delete their own comments.
         if (context === 'delete') {
             return record.get('author') === authId;
         }
 
+        // Editors can create/update comments.
         return membership.member_role === 'editor';
     }
 
-    // -----------------------------------------------------
+    // =====================================================
     // EVERYTHING ELSE
-    // -----------------------------------------------------
+    // Use normal Solarch rule evaluation.
+    // =====================================================
 
-    const resolver = new record_field_resolver_1.RecordFieldResolver({
-        record,
-        collection,
-        requestInfo,
-    });
+    const resolver =
+        new record_field_resolver_1.RecordFieldResolver({
+            record,
+            collection,
+            requestInfo,
+        });
 
-    return (0, record_field_resolver_1.evaluateRule)(rule, resolver);
-}`;
-
-if (recordHelpers.includes(patchedCanAccess)) {
-    console.log(
-        '[Solarch patch] NexusDocs authorization already patched.'
-    );
-} else if (recordHelpers.includes(originalCanAccess)) {
-    recordHelpers = recordHelpers.replace(
-        originalCanAccess,
-        patchedCanAccess
-    );
-
-    fs.writeFileSync(
-        recordHelpersPath,
-        recordHelpers,
-        'utf8'
-    );
-
-    console.log(
-        '[Solarch patch] NexusDocs authorization patched.'
-    );
-} else {
-    throw new Error(
-        '[Solarch patch] Could not find original canAccessRecord()'
+    return (0, record_field_resolver_1.evaluateRule)(
+        rule,
+        resolver
     );
 }
-console.log('[Solarch patch] PostgreSQL compatibility patch complete.');
+`;
+
+// Replace whatever version currently exists.
+recordHelpers =
+    recordHelpers.slice(0, canAccessStart) +
+    patchedCanAccess +
+    recordHelpers.slice(canAccessEnd);
+
+fs.writeFileSync(
+    recordHelpersPath,
+    recordHelpers,
+    'utf8'
+);
+
+console.log(
+    '[Solarch patch] NexusDocs authorization patched.'
+);
+
+console.log(
+    '[Solarch patch] PostgreSQL compatibility patch complete.'
+);
