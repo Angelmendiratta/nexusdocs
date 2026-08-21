@@ -129,4 +129,231 @@ patchRegex(
   /exports\.NO_CANDIDATE_LIMIT = 2147483647;/
 );
 
+// =========================================================
+// NexusDocs authorization patch
+// =========================================================
+
+const recordHelpersPath = path.join(
+  solarchDist,
+  'apis',
+  'record_helpers.js'
+);
+
+if (!fs.existsSync(recordHelpersPath)) {
+  throw new Error(
+    `[Solarch patch] Missing file: ${recordHelpersPath}`
+  );
+}
+
+let recordHelpers = fs.readFileSync(recordHelpersPath, 'utf8');
+
+const originalCanAccess = `async function canAccessRecord(app, record, collection, rule, requestInfo, skipAdminBypass = false) {
+    if (!skipAdminBypass && requestInfo.isAdmin) {
+        return true;
+    }
+    if (rule === '')
+        return true;
+    if (!rule)
+        return false;
+    const resolver = new record_field_resolver_1.RecordFieldResolver({
+        record,
+        collection,
+        requestInfo,
+    });
+    return (0, record_field_resolver_1.evaluateRule)(rule, resolver);
+}`;
+
+const patchedCanAccess = `async function canAccessRecord(app, record, collection, rule, requestInfo, skipAdminBypass = false) {
+    if (!skipAdminBypass && requestInfo.isAdmin) {
+        return true;
+    }
+
+    if (rule === '') {
+        return true;
+    }
+
+    if (!rule) {
+        return false;
+    }
+
+    const authId = requestInfo?.auth?.id;
+    const context = requestInfo?.context;
+    const collectionName = collection?.name;
+
+    if (!authId) {
+        return false;
+    }
+
+    // -----------------------------------------------------
+    // WORKSPACES
+    // -----------------------------------------------------
+
+    if (collectionName === 'workspaces') {
+        const owner = record.get('owner');
+
+        if (owner === authId) {
+            return true;
+        }
+
+        const membership = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8m95bbb08d3" WHERE "workspace" = ? AND "user" = ? LIMIT 1',
+            [record.id, authId]
+        );
+
+        return !!membership;
+    }
+
+    // -----------------------------------------------------
+    // WORKSPACE MEMBERS
+    // -----------------------------------------------------
+
+    if (collectionName === 'workspace_members') {
+        const workspaceId = record.get('workspace');
+
+        if (!workspaceId) {
+            return false;
+        }
+
+        const workspace = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8dsab2a01c2" WHERE id = ? LIMIT 1',
+            [workspaceId]
+        );
+
+        return !!workspace && workspace.owner === authId;
+    }
+
+    // -----------------------------------------------------
+    // DOCUMENTS
+    // -----------------------------------------------------
+
+    if (collectionName === 'documents') {
+        const workspaceId = record.get('workspace');
+
+        // Personal document without a workspace.
+        if (!workspaceId) {
+            return record.get('author') === authId;
+        }
+
+        const workspace = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8dsab2a01c2" WHERE id = ? LIMIT 1',
+            [workspaceId]
+        );
+
+        if (!workspace) {
+            return false;
+        }
+
+        // Owner has full access.
+        if (workspace.owner === authId) {
+            return true;
+        }
+
+        const membership = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8m95bbb08d3" WHERE "workspace" = ? AND "user" = ? LIMIT 1',
+            [workspaceId, authId]
+        );
+
+        if (!membership) {
+            return false;
+        }
+
+        // Viewer can only read.
+        if (context === 'list' || context === 'view') {
+            return true;
+        }
+
+        // Editor can write.
+        return membership.member_role === 'editor';
+    }
+
+    // -----------------------------------------------------
+    // COMMENTS
+    // -----------------------------------------------------
+
+    if (collectionName === 'comments') {
+        const documentId = record.get('document');
+
+        if (!documentId) {
+            return false;
+        }
+
+        const document = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8pbae2d93a4" WHERE id = ? LIMIT 1',
+            [documentId]
+        );
+
+        if (!document || !document.workspace) {
+            return false;
+        }
+
+        const workspace = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8dsab2a01c2" WHERE id = ? LIMIT 1',
+            [document.workspace]
+        );
+
+        if (!workspace) {
+            return false;
+        }
+
+        if (workspace.owner === authId) {
+            return true;
+        }
+
+        const membership = await app.db().queryOne(
+            'SELECT * FROM "_r_mt1gs8m95bbb08d3" WHERE "workspace" = ? AND "user" = ? LIMIT 1',
+            [document.workspace, authId]
+        );
+
+        if (!membership) {
+            return false;
+        }
+
+        if (context === 'list' || context === 'view') {
+            return true;
+        }
+
+        if (context === 'delete') {
+            return record.get('author') === authId;
+        }
+
+        return membership.member_role === 'editor';
+    }
+
+    // -----------------------------------------------------
+    // EVERYTHING ELSE
+    // -----------------------------------------------------
+
+    const resolver = new record_field_resolver_1.RecordFieldResolver({
+        record,
+        collection,
+        requestInfo,
+    });
+
+    return (0, record_field_resolver_1.evaluateRule)(rule, resolver);
+}`;
+
+if (recordHelpers.includes(patchedCanAccess)) {
+    console.log(
+        '[Solarch patch] NexusDocs authorization already patched.'
+    );
+} else if (recordHelpers.includes(originalCanAccess)) {
+    recordHelpers = recordHelpers.replace(
+        originalCanAccess,
+        patchedCanAccess
+    );
+
+    fs.writeFileSync(
+        recordHelpersPath,
+        recordHelpers,
+        'utf8'
+    );
+
+    console.log(
+        '[Solarch patch] NexusDocs authorization patched.'
+    );
+} else {
+    throw new Error(
+        '[Solarch patch] Could not find original canAccessRecord()'
+    );
+}
 console.log('[Solarch patch] PostgreSQL compatibility patch complete.');
